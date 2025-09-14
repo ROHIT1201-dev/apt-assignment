@@ -1,0 +1,237 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Orders Realtime Demo</title>
+  <style>
+    body { 
+      font-family: sans-serif; 
+      padding: 20px; 
+      background-color: #f5f5f5;
+    }
+    
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    h1 { 
+      color: #333; 
+      margin-bottom: 20px;
+    }
+    
+    .connection-status {
+      padding: 10px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+      font-weight: bold;
+    }
+    
+    .status-connected { 
+      background-color: #d4edda; 
+      color: #155724; 
+      border: 1px solid #c3e6cb;
+    }
+    
+    .status-disconnected { 
+      background-color: #f8d7da; 
+      color: #721c24; 
+      border: 1px solid #f5c6cb;
+    }
+    
+    .status-connecting { 
+      background-color: #fff3cd; 
+      color: #856404; 
+      border: 1px solid #ffeaa7;
+    }
+    
+    #updates { 
+      list-style: none; 
+      padding: 0; 
+      margin: 0;
+    }
+    
+    li { 
+      margin-bottom: 8px; 
+      padding: 12px;
+      background: #f8f9fa;
+      border-left: 4px solid #007bff;
+      border-radius: 4px;
+    }
+    
+    .op { 
+      font-weight: bold; 
+      color: #007bff;
+      text-transform: uppercase;
+      font-size: 0.9em;
+    }
+    
+    .op.INSERT { color: #28a745; }
+    .op.UPDATE { color: #ffc107; }
+    .op.DELETE { color: #dc3545; }
+    
+    .meta { 
+      font-size: 0.85em; 
+      color: #6c757d; 
+      float: right;
+    }
+    
+    .order-info {
+      margin: 4px 0;
+    }
+    
+    .customer-name {
+      font-weight: 600;
+      color: #495057;
+    }
+    
+    .product-name {
+      color: #6f42c1;
+    }
+    
+    .status {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 0.8em;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+    
+    .status.pending { background: #fff3cd; color: #856404; }
+    .status.shipped { background: #d1ecf1; color: #0c5460; }
+    .status.delivered { background: #d4edda; color: #155724; }
+
+    .test-buttons {
+      margin-bottom: 20px;
+    }
+    
+    .btn {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-right: 10px;
+      margin-bottom: 10px;
+    }
+    
+    .btn:hover {
+      background: #0056b3;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔴 Real-time Orders Dashboard</h1>
+    
+    <div id="connectionStatus" class="connection-status status-connecting">
+      🔄 Connecting to WebSocket...
+    </div>
+
+   
+
+    <h2>📦 Live Updates</h2>
+    <ul id="updates"></ul>
+  </div>
+
+  <script>
+    const ul = document.getElementById("updates");
+    const statusDiv = document.getElementById("connectionStatus");
+    let ws = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 5;
+
+    function updateConnectionStatus(status, message) {
+      statusDiv.className = `connection-status status-${status}`;
+      statusDiv.textContent = message;
+    }
+
+    function connectWebSocket() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}`);
+
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+        updateConnectionStatus('connected', 'Connected to real-time updates');
+        reconnectAttempts = 0;
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          
+          if (data.info === 'connected') {
+            console.log('Server connection confirmed');
+            return;
+          }
+          
+          addUpdate(data);
+        } catch (err) {
+          console.log("Non-JSON message:", e.data);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        updateConnectionStatus('disconnected', 'Connection error');
+      };
+
+      ws.onclose = (e) => {
+        console.log('WebSocket closed:', e.code, e.reason);
+        updateConnectionStatus('disconnected', 'Connection lost');
+        
+        if (reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++;
+          updateConnectionStatus('connecting', `Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`);
+          setTimeout(connectWebSocket, 2000 * reconnectAttempts);
+        } else {
+          updateConnectionStatus('disconnected', 'Failed to reconnect. Please refresh the page.');
+        }
+      };
+    }
+
+    function addUpdate(msg) {
+      if (!msg.operation || !msg.row) {
+        console.warn('Invalid message format:', msg);
+        return;
+      }
+
+      const li = document.createElement("li");
+      const timestamp = new Date(msg.when).toLocaleTimeString();
+      
+      li.innerHTML = `
+        <div>
+          <span class="op ${msg.operation}">${msg.operation}</span>
+          <span class="meta">${timestamp}</span>
+        </div>
+        <div class="order-info">
+          <span class="customer-name">${msg.row.customer_name || 'Unknown'}</span> 
+          ordered 
+          <span class="product-name">${msg.row.product_name || 'Unknown'}</span>
+        </div>
+        <div class="order-info">
+          Status: <span class="status ${msg.row.status}">${msg.row.status || 'pending'}</span>
+          ${msg.row.id ? `| Order #${msg.row.id}` : ''}
+        </div>
+      `;
+      
+      ul.prepend(li);
+
+      // Keep only last 50 updates
+      while (ul.children.length > 50) {
+        ul.removeChild(ul.lastChild);
+      }
+    }
+
+    
+    // Initialize WebSocket connection
+    connectWebSocket();
+  </script>
+</body>
+</html>
