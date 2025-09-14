@@ -1,18 +1,18 @@
-
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import WebSocket, { WebSocketServer } from 'ws';
 import { Client } from 'pg';
+import ordersRouter from './routes/ordersRouter.js';
 
 const PORT = process.env.PORT || 3000;
 
-const pg = new Client({
+
+export const pg = new Client({
   connectionString: process.env.DATABASE_URL,
   ssl: {
     rejectUnauthorized: false,
   },
-  
   keepAlive: true,
   keepAliveInitialDelayMillis: 0,
 });
@@ -114,11 +114,12 @@ async function main() {
   await connectToDatabase();
 
   const app = express();
+
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
   app.use(express.static('public'));
 
-  
+  // Log non-GET or non-orders requests
   app.use((req, res, next) => {
     if (req.method !== 'GET' || !req.url.includes('orders')) {
       console.log(`${req.method} ${req.url}`, req.body || '');
@@ -126,148 +127,8 @@ async function main() {
     next();
   });
 
- 
-  app.get('/verify-triggers', async (req, res) => {
-    try {
-      const triggers = await pg.query(`
-        SELECT 
-          trigger_name, 
-          event_manipulation, 
-          action_timing,
-          action_statement
-        FROM information_schema.triggers 
-        WHERE event_object_table = 'orders'
-        ORDER BY trigger_name
-      `);
-      
-      const func = await pg.query(`
-        SELECT 
-          proname, 
-          prosrc 
-        FROM pg_proc 
-        WHERE proname = 'notify_orders_change'
-      `);
-
-      res.json({
-        triggers: triggers.rows,
-        function_exists: func.rowCount > 0,
-        function_source: func.rows?.prosrc?.substring(0, 200) + '...' || 'Not found'
-      });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // get routes
-  app.get("/orders", async (req, res) => {
-    try {
-      const result = await pg.query("SELECT * FROM orders ORDER BY id DESC");
-      res.json(result.rows);
-    } catch (err) {
-      console.error("Fetch error", err);
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Create route
-
-  app.post('/orders', async (req, res) => {
-    const { customer_name, product_name, status } = req.body;
-    
-    if (!customer_name || !product_name) {
-      return res.status(400).json({ error: "customer_name and product_name required" });
-    }
-
-    try {
-      console.log('Creating order:', { customer_name, product_name, status });
-      
-      await pg.query('BEGIN');
-      
-      const result = await pg.query(
-        "INSERT INTO orders (customer_name, product_name, status) VALUES ($1,$2,$3) RETURNING *",
-        [customer_name, product_name, status || "pending"]
-      );
-      
-      await pg.query('COMMIT');
-      console.log('Order created and committed:', result.rows);
-      
-      res.json(result.rows);
-    } catch (err) {
-      await pg.query('ROLLBACK');
-      console.error("Insert error", err);
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Update route
-  app.put("/orders/:id", async (req, res) => {
-    const { id } = req.params;
-    const { status } = req.body;
-    
-    if (!id || isNaN(parseInt(id))) {
-      return res.status(400).json({ error: "Invalid order ID" });
-    }
-    
-    if (!status) {
-      return res.status(400).json({ error: "Status required" });
-    }
-
-    try {
-      console.log(`Updating order ${id} to status: ${status}`);
-      
-      await pg.query('BEGIN');
-      
-      const result = await pg.query(
-        "UPDATE orders SET status=$1, updated_at=now() WHERE id=$2 RETURNING *",
-        [status, parseInt(id)]
-      );
-      
-      if (result.rowCount === 0) {
-        await pg.query('ROLLBACK');
-        return res.status(404).json({ error: "Order not found" });
-      }
-      
-      await pg.query('COMMIT');
-      console.log('Order updated and committed:', result.rows);
-      
-      res.json(result.rows);
-    } catch (err) {
-      await pg.query('ROLLBACK');
-      console.error("Update error", err);
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  //delete route
-  app.delete("/orders/:id", async (req, res) => {
-    const { id } = req.params;
-    
-    if (!id || isNaN(parseInt(id))) {
-      return res.status(400).json({ error: "Invalid order ID" });
-    }
-
-    try {
-      console.log(`Deleting order ${id}`);
-      
-      await pg.query('BEGIN');
-      
-      const result = await pg.query("DELETE FROM orders WHERE id=$1 RETURNING *", [parseInt(id)]);
-      
-      if (result.rowCount === 0) {
-        await pg.query('ROLLBACK');
-        return res.status(404).json({ error: "Order not found" });
-      }
-      
-      await pg.query('COMMIT');
-      console.log('Order deleted and committed:', result.rows);
-      
-      res.json(result.rows);
-    } catch (err) {
-      await pg.query('ROLLBACK');
-      console.error("Delete error", err);
-      res.status(500).json({ error: err.message });
-    }
-  });
+  // Use the orders router for all order and trigger routes
+  app.use('/', ordersRouter);
 
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server });
